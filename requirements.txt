@@ -1,0 +1,11 @@
+langgraph
+langchain
+langchain_openai
+langchain_core
+langchain-community
+dotenv
+pandas 
+sqlalchemy 
+pymysql
+openpyxl
+cryptography
