@@ -11,3 +11,4 @@ class ContextSchema:
 
 class AgentState(TypedDict):
     messages: Annotated[Sequence[AnyMessage], add_messages]
+    insight: str

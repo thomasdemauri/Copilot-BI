@@ -11,7 +11,7 @@ def build_sql_tool(context):
     def do_sql_query(query: str):
         """This tool is responsible for making a consult to database and
         performing a query."""
-        
+
         raw_engine = context.db
         model = context.llm
 
@@ -42,8 +42,15 @@ def build_sql_tool(context):
 
                     To start you should ALWAYS look at the tables in the database to see what you
                     can query. Do NOT skip this step.
+                              
+                    Mandatory execution strategy:
+                        1. First, check which tables exist in the database using the appropriate tool.
+                        2. Then, inspect the schema (columns and data types) of the table(s) that appear most relevant.
+                        3. Only after that, construct and execute the SQL query.
 
                     Then you should query the schema of the most relevant tables.
+
+                    Whenever you encounter a column that looks like an ID (e.g., customer_id, product_id) and it has a relationship with another table (foreign key), you MUST retrieve the human-readable value associated with that ID, such as the name or description. Do not return the ID alone. Always follow the relationship to show the meaningful value instead of just the ID.
                     """
                 ),HumanMessage(content=query)
             ]
