@@ -10,13 +10,13 @@ from db.mysql import create_mysql_engine
 load_dotenv()
 
 API_KEY = os.getenv("API_KEY")
-USER = os.getenv("USER")
-PASSWORD = os.getenv("PASSWORD")
+MYSQL_USER = os.getenv("MYSQL_USER")
+MYSQL_ROOT_PASSWORD = os.getenv("MYSQL_ROOT_PASSWORD")
 HOST = os.getenv("HOST")
 PORT = os.getenv("PORT")
 DATABASE = os.getenv("DATABASE")
 
-engine = create_mysql_engine(user=USER, password=PASSWORD, host=HOST, port=PORT, database=DATABASE)
+engine = create_mysql_engine(user=MYSQL_USER, password=MYSQL_ROOT_PASSWORD, host=HOST, port=PORT, database=DATABASE)
 context=ContextSchema(llm=None, db=engine)
 
 agent, tools, model = build_agent(API_KEY, context=context)

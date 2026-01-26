@@ -9,3 +9,6 @@ sqlalchemy
 pymysql
 openpyxl
 cryptography
+fastapi
+uvicorn
+python-multipart
