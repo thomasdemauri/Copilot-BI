@@ -4,55 +4,55 @@ from langchain.agents import create_agent
 
 def agent_node(agent):
     def _node(state: AgentState):
+        prompt = """"
+            "REPORTING GUIDELINES:
+            Clarity & Objectivity: Get straight to the point. Focus on the insight, not just the numbers.
+            NO TABLES: You are strictly forbidden from rendering tables (e.g., using pipes | or rows).
+            List Format: Present all findings, breakdowns, and data comparisons using bulleted lists (Markdown * or -)."
+        """;
+        
+        state["messages"].append(SystemMessage(content=prompt))
         response = agent.invoke(state["messages"])
         return {"messages": [response]}
+    
     return _node
 
 def insight_node(model, tools):
     def _node(state: AgentState):
         prompt = """
-            You are a Senior Data Strategist. 
-            Your mission is to explain the ROOT CAUSE of the data, not just compare it to the average.
+            You are a Senior Data Strategist & Root Cause Investigator.
+            Your goal is not to report *what* happened, but *precisely why* it happened by identifying the Dominant Drivers.
 
-            INVESTIGATION PROTOCOL (Follow this priority):
+            Dominant Driver Test (Composição)
 
-            1. COMPOSITION ANALYSIS (High Priority):
-            - If the result is a specific entity (e.g., a Customer or Region), investigate WHAT drives their performance.
-            - ACTION: Use SQL to Group By 'Category', 'Sub-Category', or 'Segment'.
-            - Example: "Tamara's profit comes 90% from Technology products, not Office Supplies."
+            Hipótese: Um subgrupo específico provavelmente está pesando no resultado.
 
-            2. TREND ANALYSIS (Medium Priority):
-            - Is this performance consistent over time or a one-off spike?
-            - ACTION: Use SQL to Group By Year or Month.
+            Ação: Execute um SQL para GROUP BY dimensões baixas (ex.: Produto, Cidade, Subcategoria) e ordene pelo valor do métrico.
 
-            3. BENCHMARKING (Low Priority):
-            - Compare with the global average ONLY if composition or trends reveal no specific patterns.
+            Meta: Identificar se uma entidade contribui >50%.
 
-           Use the following structured patterns to guide your investigation and derive actionable insights. 
-            These patterns are examples of how to ask investigative questions. You can adapt them or create similar approaches 
-            as needed to uncover root causes in the data.
-                1. THE PARETO TEST (Concentration):
-                    - Question: "Is the performance concentrated in a few top entities?"
-                    - Action: Group by the main categorical column and check if the top 20% generate 80% of the results.
-                    - Insight Ex: "Action is needed as 80% of the output comes from only 3 sources, representing high risk."
+            Ex.: "O lucro caiu, principalmente por uma queda de -40% em 'Mesas', enquanto o restante das categorias se manteve estável."
 
-                2. THE TREND TEST (Volatility):
-                    - Question: "Is the result stable, growing, or volatile over time?"
-                    - Action: If a date column exists, group results by Month/Year.
-                    - Insight Ex: "The total is high, but it has been declining for the last 3 periods."
+            Volatility Check (Se houver data)
 
-                3. THE OUTLIER TEST (Anomalies):
-                    - Question: "Is there any entity performing significantly above/below the standard deviation?"
-                    - Action: Compare the specific result against the average of its group.
-                    - Insight Ex: "Item X is an anomaly, performing 300% above the category average."
+            Verifique se a tabela possui coluna de data.
 
-                4. THE MIX TEST (Composition):
-                    - Question: "What is the internal composition of this result?"
-                    - Action: Drill down into sub-categories or segments.
+            Se sim, agrupe por mês/ano para identificar quando a mudança ocorreu e se foi gradual ou abrupta.
 
-            CONSTRAINT:
+            Se não, pule essa etapa.
+
+            Contextual Benchmark
+
+            Compare o Dominant Driver com o resto do conjunto.
+
+            Ex.: "Enquanto 'Smartphones' cresceram 20%, o restante da loja ficou estável (0%)."
+
+            ### FINAL CONSTRAINT:
+            - You **MUST** execute a SQL query that breaks the data down by a Dimension (Category, Region, etc.) or Time (if available) to prove your insight.
             - You MUST execute at least one new SQL query to investigate the 'Why'.
+            - IF a Date column exists, prioritize a Trend query. IF NOT, prioritize a Composition query.
             - Do NOT provide generic insights like "This is higher than average" without explaining the driver.
+            - Do NOT put a separation "insight". Just provide the final insight directly.
         """
 
         agent = create_agent(model, tools=tools)

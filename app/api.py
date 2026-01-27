@@ -14,16 +14,29 @@ from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from typing import List
 from sqlalchemy import text
+from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
 
 app = FastAPI(title="AI SQL Agent API", description="API para consulta dinâmica em bancos SQL via LangChain")
 
+origins = [
+    "http://localhost:5173",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 API_KEY = os.getenv("API_KEY")
 MYSQL_USER = os.getenv("MYSQL_USER")
 MYSQL_ROOT_PASSWORD = os.getenv("MYSQL_ROOT_PASSWORD")
 HOST = os.getenv("HOST")
-PORT = os.getenv("MYSQL_PORT")
+PORT = int(os.getenv("MYSQL_PORT", 3306))
 
 class QueryRequest(BaseModel):
     question: str
