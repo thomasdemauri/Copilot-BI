@@ -81,6 +81,51 @@ async def create_namespace(request: CreateNamespaceRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao criar namespace: {str(e)}")
 
+@app.get("/api/namespaces")
+async def list_namespaces():
+    """Lista todos os bancos de dados (namespaces) com suas tabelas."""
+    try:
+        engine_root = create_mysql_engine(
+            user="root", password=MYSQL_ROOT_PASSWORD, host=HOST, port=PORT, database="mysql"
+        )
+        
+        with engine_root.connect() as conn:
+            result = conn.execute(text("SHOW DATABASES"))
+            databases = [row[0] for row in result]
+            
+            # Filtra bancos de sistema do MySQL
+            system_dbs = {'information_schema', 'mysql', 'performance_schema', 'sys'}
+            user_databases = [db for db in databases if db not in system_dbs]
+        
+        # Para cada banco, lista suas tabelas
+        namespaces_with_tables = []
+        for db_name in user_databases:
+            try:
+                engine_db = create_mysql_engine(
+                    user="root", password=MYSQL_ROOT_PASSWORD, host=HOST, port=PORT, database=db_name
+                )
+                
+                with engine_db.connect() as conn:
+                    tables_result = conn.execute(text("SHOW TABLES"))
+                    tables = [row[0] for row in tables_result]
+                
+                namespaces_with_tables.append({
+                    "name": db_name,
+                    "tables": tables
+                })
+            except Exception as e:
+                # Se não conseguir conectar ao banco, ainda assim o inclui com lista vazia
+                namespaces_with_tables.append({
+                    "name": db_name,
+                    "tables": [],
+                    "error": str(e)
+                })
+        
+        return {"namespaces": namespaces_with_tables}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao listar namespaces: {str(e)}")
+
 @app.post("/api/upload")
 async def upload_files(
     namespace_name: str = Form(...), 
