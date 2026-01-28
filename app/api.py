@@ -1,4 +1,5 @@
 import os
+import traceback
 import uvicorn
 import re
 import pandas as pd
@@ -34,24 +35,19 @@ app.add_middleware(
 
 API_KEY = os.getenv("API_KEY")
 MYSQL_USER = os.getenv("MYSQL_USER")
-MYSQL_ROOT_PASSWORD = os.getenv("MYSQL_ROOT_PASSWORD")
-HOST = os.getenv("HOST")
+MYSQL_ROOT_PASSWORD = str(os.getenv("MYSQL_ROOT_PASSWORD"))
+HOST = str(os.getenv("HOST"))
 PORT = int(os.getenv("MYSQL_PORT", 3306))
 
 class QueryRequest(BaseModel):
     question: str
     namespace_name: str
 
-class QueryResponse(BaseModel):
-    answer: str
-    insight: str | None
-
 class CreateNamespaceRequest(BaseModel):
     namespace_name: str
 
 class QueryResponse(BaseModel):
     answer: str
-    insight: str | None
 
 def validate_db_name(name: str):
     """Garante que o nome do banco só tenha letras, números e underline."""
@@ -138,28 +134,26 @@ async def upload_files(
     db_name = validate_db_name(namespace_name)
     
     try:
-        # Conecta especificamente no banco do namespace
         engine = create_mysql_engine(
             user="root", password=MYSQL_ROOT_PASSWORD, host=HOST, port=PORT, database=db_name
         )
         
         uploaded_tables = []
-        
+        print(f"Recebido {len(files)} arquivos para o namespace '{db_name}'.")
         for file in files:
             filename = file.filename.lower()
-            # Define o nome da tabela baseada no nome do arquivo (sem extensão)
-            table_name = os.path.splitext(file.filename)[0].replace(" ", "_").replace("-", "_")
-            
-            # Lê o arquivo dependendo da extensão
+            table_name = os.path.splitext(filename)[0].replace(" ", "_").replace("-", "_")
             if filename.endswith(".csv"):
-                df = pd.read_csv(file.file)
+                try:
+                    df = pd.read_csv(file.file,sep=None,encoding="utf-8",engine="python",on_bad_lines="skip")
+                except:
+                    file.file.seek(0)
+                    df = pd.read_csv(file.file,sep=None,encoding="latin1",engine="python",on_bad_lines="skip")
             elif filename.endswith(".xlsx") or filename.endswith(".xls"):
                 df = pd.read_excel(file.file)
             else:
-                continue # Pula arquivos que não são csv ou excel
+                continue
 
-            # Salva no banco de dados SQL
-            # if_exists='replace' vai sobrescrever a tabela se já existir. Use 'append' se quiser somar.
             df.to_sql(name=table_name, con=engine, if_exists='replace', index=False)
             uploaded_tables.append(table_name)
 
@@ -173,7 +167,11 @@ async def upload_files(
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro no processamento dos arquivos: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
 @app.post("/api/ask", response_model=QueryResponse)
 async def ask_database(request: QueryRequest):
@@ -194,14 +192,24 @@ async def ask_database(request: QueryRequest):
             "messages": [HumanMessage(content=request.question)]
         }, context=context)
 
-        final_content = result["messages"][-1].content
-        insight_content = result.get("insight", None)
+        print("=== DEBUG: Result completo ===")
+        print(result)
+        print("\n=== DEBUG: Messages ===")
+        print(result.get("messages", []))
+        print("\n=== DEBUG: Última mensagem ===")
+        if result.get("messages"):
+            last_msg = result["messages"][-1]
+            print(f"Tipo: {type(last_msg)}")
+            print(f"Content: {last_msg.content}")
+        
+        final_content = result["messages"][-1].content if result.get("messages") else ""
 
-        return QueryResponse(answer=final_content, insight=insight_content)
+        return QueryResponse(answer=final_content)
 
     except Exception as e:
-        print(f"Erro detalhado: {e}") # Log no console para debug
-        raise HTTPException(status_code=500, detail="Erro ao processar a pergunta da AI.")
+        print(f"Erro detalhado: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Erro ao processar a pergunta da AI: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
