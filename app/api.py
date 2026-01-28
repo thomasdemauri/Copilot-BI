@@ -1,28 +1,26 @@
 import os
 import traceback
 import uvicorn
-import re
-import pandas as pd
 from dotenv import load_dotenv
-from langchain.messages import HumanMessage, ToolMessage, SystemMessage, AIMessage
+from langchain.messages import HumanMessage
 from agents.sql_agent import build_agent
 from graph.graph import build_graph
 from graph.state import ContextSchema
-from helpers.panda import excel_to_db
 from db.mysql import create_mysql_engine
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
-from typing import List
-from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
+from uuid import uuid4
+from datetime import datetime
+from sqlalchemy import text
 
 load_dotenv()
 
-app = FastAPI(title="AI SQL Agent API", description="API para consulta dinâmica em bancos SQL via LangChain")
+app = FastAPI(title="AI SQL Agent API - Olist", description="API para análise de dados Olist via IA")
 
 origins = [
     "http://localhost:5173",
+    "http://localhost:3000",
 ]
 
 app.add_middleware(
@@ -38,158 +36,215 @@ MYSQL_USER = os.getenv("MYSQL_USER")
 MYSQL_ROOT_PASSWORD = str(os.getenv("MYSQL_ROOT_PASSWORD"))
 HOST = str(os.getenv("HOST"))
 PORT = int(os.getenv("MYSQL_PORT", 3306))
+DATABASE = os.getenv("DATABASE")
+
+# Armazenar histórico de chats em memória (em produção, usar DB)
+chat_history = {}
+
+def setup_database_permissions():
+    """Configura permissões do banco de dados na inicialização."""
+    try:
+        print(f"🔧 Verificando permissões do usuário '{MYSQL_USER}' no database '{DATABASE}'...")
+        
+        # Tentar conectar com o usuário normal primeiro
+        try:
+            engine = create_mysql_engine(
+                user=MYSQL_USER,
+                password=MYSQL_ROOT_PASSWORD,
+                host=HOST,
+                port=PORT,
+                database=DATABASE
+            )
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            print(f"✅ Usuário '{MYSQL_USER}' tem acesso ao database '{DATABASE}'")
+            return
+        except Exception as e:
+            if "Access denied" not in str(e):
+                raise
+            print(f"⚠️  Usuário '{MYSQL_USER}' sem acesso. Tentando configurar permissões...")
+        
+        # Se não tiver acesso, tentar conceder permissões com root
+        try:
+            engine_root = create_mysql_engine(
+                user="root",
+                password=MYSQL_ROOT_PASSWORD,
+                host=HOST,
+                port=PORT,
+                database="mysql"
+            )
+            
+            with engine_root.connect() as conn:
+                # Conceder permissões
+                conn.execute(text(f"GRANT ALL PRIVILEGES ON `{DATABASE}`.* TO '{MYSQL_USER}'@'%'"))
+                conn.execute(text("FLUSH PRIVILEGES"))
+                conn.commit()
+            
+            print(f"✅ Permissões concedidas para '{MYSQL_USER}' no database '{DATABASE}'")
+            
+            # Verificar se funcionou
+            engine = create_mysql_engine(
+                user=MYSQL_USER,
+                password=MYSQL_ROOT_PASSWORD,
+                host=HOST,
+                port=PORT,
+                database=DATABASE
+            )
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            print(f"✅ Acesso confirmado!")
+            
+        except Exception as root_error:
+            print(f"❌ Erro ao configurar permissões com root:")
+            print(f"   {str(root_error)}")
+            print(f"\n⚠️  Execute manualmente como root:")
+            print(f"   GRANT ALL PRIVILEGES ON `{DATABASE}`.* TO '{MYSQL_USER}'@'%';")
+            print(f"   FLUSH PRIVILEGES;")
+            raise
+    
+    except Exception as e:
+        print(f"❌ Erro ao configurar database: {str(e)}")
+        raise
+
+# Executar setup na inicialização
+@app.on_event("startup")
+async def startup_event():
+    """Executado quando a API inicia."""
+    try:
+        setup_database_permissions()
+    except Exception as e:
+        print(f"⚠️  Aviso: Não foi possível verificar permissões automaticamente")
+        print(f"   A API ainda pode funcionar se as permissões estão corretas")
 
 class QueryRequest(BaseModel):
     question: str
-    namespace_name: str
-
-class CreateNamespaceRequest(BaseModel):
-    namespace_name: str
+    chat_id: str | None = None
 
 class QueryResponse(BaseModel):
     answer: str
+    chat_id: str
+    timestamp: str
 
-def validate_db_name(name: str):
-    """Garante que o nome do banco só tenha letras, números e underline."""
-    if not re.match(r'^[a-zA-Z0-9_]+$', name):
-        raise HTTPException(status_code=400, detail="Nome do namespace inválido. Use apenas letras, números e '_'.")
-    return name
+class ChatMessage(BaseModel):
+    role: str  # "user" ou "assistant"
+    content: str
+    timestamp: str
 
-@app.post("/api/namespaces", status_code=201)
-async def create_namespace(request: CreateNamespaceRequest):
-    """Cria um novo banco de dados no MySQL para isolar os dados."""
-    db_name = validate_db_name(request.namespace_name)
+class ChatResponse(BaseModel):
+    chat_id: str
+    created_at: str
+    messages: list[ChatMessage]
+
+def get_or_create_chat(chat_id: str | None = None) -> str:
+    """Retorna chat_id existente ou cria um novo."""
+    if chat_id and chat_id in chat_history:
+        return chat_id
     
-    try:
-        # Conecta no MySQL sem especificar banco (ou no 'mysql' padrão) para poder criar um novo
-        # Nota: Estou assumindo que sua função create_mysql_engine aceita database=None ou string vazia
-        # Se não aceitar, você pode criar uma engine direta do SQLAlchemy aqui.
-        engine_root = create_mysql_engine(
-            user="root", password=MYSQL_ROOT_PASSWORD, host=HOST, port=PORT, database=""
-        )
-        
-        with engine_root.connect() as conn:
-            # Commit automático é necessário para DDL (Create Database) em algumas versões
-            conn.execute(text(f"CREATE DATABASE IF NOT EXISTS {db_name}"))
-            
-        return {"message": f"Namespace '{db_name}' criado com sucesso (ou já existia)."}
+    new_chat_id = str(uuid4())
+    chat_history[new_chat_id] = {
+        "created_at": datetime.now().isoformat(),
+        "messages": []
+    }
+    return new_chat_id
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao criar namespace: {str(e)}")
+@app.post("/api/chat/new")
+async def create_new_chat():
+    """Cria um novo chat."""
+    chat_id = get_or_create_chat()
+    return {
+        "chat_id": chat_id,
+        "created_at": chat_history[chat_id]["created_at"]
+    }
 
-@app.get("/api/namespaces")
-async def list_namespaces():
-    """Lista todos os bancos de dados (namespaces) com suas tabelas."""
-    try:
-        engine_root = create_mysql_engine(
-            user="root", password=MYSQL_ROOT_PASSWORD, host=HOST, port=PORT, database="mysql"
-        )
-        
-        with engine_root.connect() as conn:
-            result = conn.execute(text("SHOW DATABASES"))
-            databases = [row[0] for row in result]
-            
-            # Filtra bancos de sistema do MySQL
-            system_dbs = {'information_schema', 'mysql', 'performance_schema', 'sys'}
-            user_databases = [db for db in databases if db not in system_dbs]
-        
-        # Para cada banco, lista suas tabelas
-        namespaces_with_tables = []
-        for db_name in user_databases:
-            try:
-                engine_db = create_mysql_engine(
-                    user="root", password=MYSQL_ROOT_PASSWORD, host=HOST, port=PORT, database=db_name
-                )
-                
-                with engine_db.connect() as conn:
-                    tables_result = conn.execute(text("SHOW TABLES"))
-                    tables = [row[0] for row in tables_result]
-                
-                namespaces_with_tables.append({
-                    "name": db_name,
-                    "tables": tables
-                })
-            except Exception as e:
-                # Se não conseguir conectar ao banco, ainda assim o inclui com lista vazia
-                namespaces_with_tables.append({
-                    "name": db_name,
-                    "tables": [],
-                    "error": str(e)
-                })
-        
-        return {"namespaces": namespaces_with_tables}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao listar namespaces: {str(e)}")
-
-@app.post("/api/upload")
-async def upload_files(
-    namespace_name: str = Form(...), 
-    files: List[UploadFile] = File(...)
-):
-    """
-    Recebe o nome do namespace e uma lista de arquivos.
-    Lê cada arquivo e salva como uma tabela no banco de dados correspondente.
-    """
-    db_name = validate_db_name(namespace_name)
+@app.get("/api/chat/{chat_id}")
+async def get_chat(chat_id: str):
+    """Recupera um chat específico com seu histórico."""
+    if chat_id not in chat_history:
+        raise HTTPException(status_code=404, detail="Chat não encontrado")
     
-    try:
-        engine = create_mysql_engine(
-            user="root", password=MYSQL_ROOT_PASSWORD, host=HOST, port=PORT, database=db_name
-        )
-        
-        uploaded_tables = []
-        print(f"Recebido {len(files)} arquivos para o namespace '{db_name}'.")
-        for file in files:
-            filename = file.filename.lower()
-            table_name = os.path.splitext(filename)[0].replace(" ", "_").replace("-", "_")
-            if filename.endswith(".csv"):
-                try:
-                    df = pd.read_csv(file.file,sep=None,encoding="utf-8",engine="python",on_bad_lines="skip")
-                except:
-                    file.file.seek(0)
-                    df = pd.read_csv(file.file,sep=None,encoding="latin1",engine="python",on_bad_lines="skip")
-            elif filename.endswith(".xlsx") or filename.endswith(".xls"):
-                df = pd.read_excel(file.file)
-            else:
-                continue
+    chat = chat_history[chat_id]
+    messages = [
+        ChatMessage(role=msg["role"], content=msg["content"], timestamp=msg["timestamp"])
+        for msg in chat["messages"]
+    ]
+    
+    return ChatResponse(
+        chat_id=chat_id,
+        created_at=chat["created_at"],
+        messages=messages
+    )
 
-            df.to_sql(name=table_name, con=engine, if_exists='replace', index=False)
-            uploaded_tables.append(table_name)
+@app.get("/api/chats")
+async def list_chats():
+    """Lista todos os chats."""
+    chats = []
+    for chat_id, chat in chat_history.items():
+        chats.append({
+            "chat_id": chat_id,
+            "created_at": chat["created_at"],
+            "message_count": len(chat["messages"]),
+            "last_message": chat["messages"][-1]["content"] if chat["messages"] else None
+        })
+    return {"chats": chats}
 
-        if not uploaded_tables:
-            return {"message": "Nenhum arquivo válido processado.", "tables": []}
-
-        return {
-            "message": "Arquivos processados com sucesso.",
-            "namespace": db_name,
-            "created_tables": uploaded_tables
-        }
-
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+@app.delete("/api/chat/{chat_id}")
+async def delete_chat(chat_id: str):
+    """Deleta um chat."""
+    if chat_id not in chat_history:
+        raise HTTPException(status_code=404, detail="Chat não encontrado")
+    
+    del chat_history[chat_id]
+    return {"message": "Chat deletado com sucesso"}
 
 @app.post("/api/ask", response_model=QueryResponse)
 async def ask_database(request: QueryRequest):
-    """Consulta os dados usando LangChain e seu Agente."""
+    """Consulta o dataset com suporte a múltiplos chats."""
     try:
-        db_name = validate_db_name(request.namespace_name)
+        # Obter ou criar chat
+        chat_id = get_or_create_chat(request.chat_id)
         
-        engine = create_mysql_engine(
-            user="root", password=MYSQL_ROOT_PASSWORD, host=HOST, port=PORT, database=db_name
-        )
+        # Conectar ao database
+        try:
+            engine = create_mysql_engine(
+                user=MYSQL_USER,
+                password=MYSQL_ROOT_PASSWORD,
+                host=HOST,
+                port=PORT,
+                database=DATABASE
+            )
+        except Exception as db_error:
+            if "Access denied" in str(db_error):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Erro de acesso ao database. Verifique se o usuário '{MYSQL_USER}' tem permissões no database '{DATABASE}'. Consulte setup_permissions.sql para corrigir."
+                )
+            elif "Unknown database" in str(db_error):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Database '{DATABASE}' não encontrado. Verifique a configuração no .env"
+                )
+            raise
+        
         context = ContextSchema(llm=None, db=engine)
         
         # Reconstrói o agente para este contexto específico
         agent, tools, model = build_agent(API_KEY, context=context)
         app_graph = build_graph(agent, tools, model)
 
+        # Construir histórico de mensagens
+        messages = []
+        for msg in chat_history[chat_id]["messages"]:
+            if msg["role"] == "user":
+                messages.append(HumanMessage(content=msg["content"]))
+            elif msg["role"] == "assistant":
+                from langchain.messages import AIMessage
+                messages.append(AIMessage(content=msg["content"]))
+        
+        # Adicionar pergunta atual
+        messages.append(HumanMessage(content=request.question))
+
         result = app_graph.invoke({
-            "messages": [HumanMessage(content=request.question)]
+            "messages": messages
         }, context=context)
 
         print("=== DEBUG: Result completo ===")
@@ -204,12 +259,31 @@ async def ask_database(request: QueryRequest):
         
         final_content = result["messages"][-1].content if result.get("messages") else ""
 
-        return QueryResponse(answer=final_content)
+        # Salvar no histórico
+        timestamp = datetime.now().isoformat()
+        chat_history[chat_id]["messages"].append({
+            "role": "user",
+            "content": request.question,
+            "timestamp": timestamp
+        })
+        chat_history[chat_id]["messages"].append({
+            "role": "assistant",
+            "content": final_content,
+            "timestamp": timestamp
+        })
 
+        return QueryResponse(
+            answer=final_content,
+            chat_id=chat_id,
+            timestamp=timestamp
+        )
+
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Erro detalhado: {e}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Erro ao processar a pergunta da AI: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao processar a pergunta da IA: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
