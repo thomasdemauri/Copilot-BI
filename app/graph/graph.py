@@ -6,9 +6,21 @@ from graph.nodes import unified_analysis_node
 
 def should_continue(state: AgentState) -> str:
     """Decide se deve executar tools ou terminar."""
-    last_message = state["messages"][-1]
-    if getattr(last_message, "tool_calls", None):
+    messages = state["messages"]
+    last_message = messages[-1]
+    
+    # Se a última mensagem tem tool_calls, executar tools
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "tools"
+    
+    # Se já executou pelo menos uma tool (ToolMessage presente), terminar
+    from langchain_core.messages import ToolMessage
+    has_tool_message = any(isinstance(msg, ToolMessage) for msg in messages)
+    
+    if has_tool_message:
+        return "end"
+    
+    # Caso contrário, continuar
     return "end"
 
 
@@ -33,7 +45,7 @@ def build_graph(agent, tools, llm):
         }
     )
     
-    # Depois de executar tools, volta para análise
+    # Depois de executar tools, volta para análise uma vez apenas
     graph.add_edge("tools", "unified_analysis")
 
     return graph.compile()

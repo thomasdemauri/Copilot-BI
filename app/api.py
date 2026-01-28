@@ -41,6 +41,9 @@ DATABASE = os.getenv("DATABASE")
 # Armazenar histórico de chats em memória (em produção, usar DB)
 chat_history = {}
 
+# Configuração de histórico
+MAX_HISTORY_MESSAGES = 10  # Últimas 5 interações (5 user + 5 assistant)
+
 def setup_database_permissions():
     """Configura permissões do banco de dados na inicialização."""
     try:
@@ -196,12 +199,72 @@ async def delete_chat(chat_id: str):
     del chat_history[chat_id]
     return {"message": "Chat deletado com sucesso"}
 
+def needs_database_query(question: str) -> bool:
+    """Verifica se a pergunta realmente precisa de consulta ao banco."""
+    question_lower = question.lower().strip()
+    
+    # Saudações e conversas casuais
+    casual_patterns = [
+        "olá", "oi", "ola", "hey", "hello", "bom dia", "boa tarde", "boa noite",
+        "tudo bem", "como vai", "obrigado", "obrigada", "valeu", "ok",
+        "meu nome é", "me chamo", "sou o", "sou a",
+        "quem é você", "o que você faz", "você pode", "consegue",
+    ]
+    
+    # Se começar com essas palavras, não precisa de query
+    if any(question_lower.startswith(pattern) for pattern in casual_patterns):
+        return False
+    
+    # Se for muito curta (< 10 chars) e não tiver palavras-chave, provavelmente não precisa
+    if len(question_lower) < 10 and not any(word in question_lower for word in ["top", "categoria", "estado", "gmv", "vendas"]):
+        return False
+    
+    return True
+
 @app.post("/api/ask", response_model=QueryResponse)
 async def ask_database(request: QueryRequest):
     """Consulta o dataset com suporte a múltiplos chats."""
     try:
         # Obter ou criar chat
         chat_id = get_or_create_chat(request.chat_id)
+        timestamp = datetime.now().isoformat()
+        
+        # Verificar se precisa consultar o banco
+        if not needs_database_query(request.question):
+            # Resposta rápida para mensagens casuais
+            casual_responses = {
+                "olá": "Olá! Sou seu assistente de análise de dados Olist. Como posso ajudar você hoje? Posso responder perguntas sobre categorias, vendas, GMV, estados, pagamentos e muito mais!",
+                "oi": "Oi! 👋 Estou aqui para ajudar com análises do dataset Olist. Pergunte-me sobre vendas, categorias, estados ou qualquer métrica!",
+                "meu nome": f"Prazer em conhecê-lo! Como posso ajudá-lo a analisar os dados do Olist hoje?",
+            }
+            
+            # Encontrar resposta casual
+            response = None
+            for pattern, answer in casual_responses.items():
+                if pattern in request.question.lower():
+                    response = answer
+                    break
+            
+            if not response:
+                response = "Entendi! Como posso ajudar você com a análise dos dados Olist?"
+            
+            # Salvar no histórico
+            chat_history[chat_id]["messages"].append({
+                "role": "user",
+                "content": request.question,
+                "timestamp": timestamp
+            })
+            chat_history[chat_id]["messages"].append({
+                "role": "assistant",
+                "content": response,
+                "timestamp": timestamp
+            })
+            
+            return QueryResponse(
+                answer=response,
+                chat_id=chat_id,
+                timestamp=timestamp
+            )
         
         # Conectar ao database
         try:
@@ -231,9 +294,14 @@ async def ask_database(request: QueryRequest):
         agent, tools, model = build_agent(API_KEY, context=context)
         app_graph = build_graph(agent, tools, model)
 
-        # Construir histórico de mensagens
+        # Construir histórico de mensagens (limitado)
         messages = []
-        for msg in chat_history[chat_id]["messages"]:
+        chat_messages = chat_history[chat_id]["messages"]
+        
+        # Pegar apenas as últimas N mensagens para evitar excesso de tokens
+        recent_messages = chat_messages[-MAX_HISTORY_MESSAGES:] if len(chat_messages) > MAX_HISTORY_MESSAGES else chat_messages
+        
+        for msg in recent_messages:
             if msg["role"] == "user":
                 messages.append(HumanMessage(content=msg["content"]))
             elif msg["role"] == "assistant":
@@ -245,7 +313,7 @@ async def ask_database(request: QueryRequest):
 
         result = app_graph.invoke({
             "messages": messages
-        }, context=context)
+        }, config={"recursion_limit": 50})
 
         print("=== DEBUG: Result completo ===")
         print(result)
