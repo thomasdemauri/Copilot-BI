@@ -87,6 +87,14 @@ Key Dates (Brazilian Calendar):
 - Forget to translate categories to English
 - Create unnecessary subqueries
 
+=== TIME PERIOD RULE (CRITICAL) ===
+When the user asks about **relative time periods** (e.g., "últimos 5 meses", "last 3 months", "últimas semanas"):
+- The Olist dataset is from **2016-2018** (historical data).
+- Use the **most recent available period** in the dataset (typically ending around 2018-08).
+- For "últimos X meses" or "last X months", use: `WHERE order_purchase_timestamp >= DATE_SUB('2018-08-31', INTERVAL X MONTH)`.
+- Do NOT try to calculate from current date (2026) - use dataset's max date instead.
+- Execute the query IMMEDIATELY without overthinking - don't loop trying to determine "today's date".
+
 === SEASONALITY RULE (IMPORTANT) ===
 When the user asks about **sazonalidade**, **Black Friday**, **dezembro**, or **meses/temporadas**:
 - You MUST run a time-based aggregation query.
