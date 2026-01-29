@@ -17,6 +17,7 @@ load_dotenv()
 
 # Configurações
 MYSQL_USER = os.getenv("MYSQL_USER")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
 MYSQL_ROOT_PASSWORD = str(os.getenv("MYSQL_ROOT_PASSWORD"))
 HOST = str(os.getenv("HOST"))
 PORT = int(os.getenv("MYSQL_PORT", 3306))
@@ -30,11 +31,9 @@ if not DATA_DIR.exists():
 print(f"🔍 Procurando dados em: {DATA_DIR}")
 
 
-def create_connection(user="root"):
-    """Cria conexão com MySQL."""
-    connection_string = (
-        f"mysql+pymysql://{user}:{MYSQL_ROOT_PASSWORD}@{HOST}:{PORT}/{DATABASE}"
-    )
+def create_connection(user, password, database):
+    """Cria conexão com MySQL usando um database específico."""
+    connection_string = f"mysql+pymysql://{user}:{password}@{HOST}:{PORT}/{database}"
     engine = create_engine(
         connection_string,
         pool_pre_ping=True,
@@ -42,6 +41,68 @@ def create_connection(user="root"):
         echo=False
     )
     return engine
+
+
+def create_server_connection(user, password):
+    """Cria conexão com MySQL sem selecionar database."""
+    connection_string = f"mysql+pymysql://{user}:{password}@{HOST}:{PORT}/"
+    engine = create_engine(
+        connection_string,
+        pool_pre_ping=True,
+        pool_recycle=3600,
+        echo=False
+    )
+    return engine
+
+
+def ensure_database_exists():
+    """Garante que o database exista (cria se necessário)."""
+    if not DATABASE:
+        print("\n❌ Variável DATABASE não configurada no .env")
+        sys.exit(1)
+
+    candidates = []
+    if MYSQL_USER and MYSQL_PASSWORD:
+        candidates.append((MYSQL_USER, MYSQL_PASSWORD))
+    if MYSQL_ROOT_PASSWORD:
+        candidates.append(("root", MYSQL_ROOT_PASSWORD))
+
+    for user, password in candidates:
+        try:
+            engine = create_server_connection(user, password)
+            with engine.connect() as conn:
+                conn.execute(text(f"CREATE DATABASE IF NOT EXISTS `{DATABASE}`"))
+                conn.commit()
+            print(f"   ✅ Database '{DATABASE}' verificado/criado")
+            return True
+        except Exception as e:
+            print(f"   ⚠️  Não foi possível criar/verificar com '{user}': {str(e)}")
+
+    print("   ❌ Falha ao criar/verificar o database com as credenciais disponíveis")
+    sys.exit(1)
+
+
+def grant_user_permissions(target_user, target_password):
+    """Concede permissões ao usuário do app usando root (se disponível)."""
+    if not MYSQL_ROOT_PASSWORD:
+        return False
+
+    try:
+        engine = create_server_connection("root", MYSQL_ROOT_PASSWORD)
+        with engine.connect() as conn:
+            conn.execute(text(
+                f"CREATE USER IF NOT EXISTS '{target_user}'@'%' IDENTIFIED BY :pwd"
+            ), {"pwd": target_password})
+            conn.execute(text(
+                f"GRANT ALL PRIVILEGES ON `{DATABASE}`.* TO '{target_user}'@'%'"
+            ))
+            conn.execute(text("FLUSH PRIVILEGES"))
+            conn.commit()
+        print(f"   ✅ Permissões concedidas para '{target_user}' no database '{DATABASE}'")
+        return True
+    except Exception as e:
+        print(f"   ⚠️  Não foi possível conceder permissões para '{target_user}': {str(e)}")
+        return False
 
 
 def table_exists(engine, table_name):
@@ -154,16 +215,34 @@ def main():
         print("   Crie uma pasta 'data' com os arquivos CSV")
         sys.exit(1)
     
-    # Conectar ao banco
+    # Garantir database
     print(f"\n🔌 Conectando ao MySQL...")
     try:
-        engine = create_connection(user="root")
+        ensure_database_exists()
+        data_user = MYSQL_USER or "root"
+        data_password = MYSQL_PASSWORD or MYSQL_ROOT_PASSWORD
+        engine = create_connection(user=data_user, password=data_password, database=DATABASE)
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         print("   ✅ Conectado com sucesso!")
     except Exception as e:
-        print(f"   ❌ Erro ao conectar: {str(e)}")
-        sys.exit(1)
+        error_message = str(e)
+        if data_user and "Access denied" in error_message and data_user != "root":
+            if grant_user_permissions(data_user, data_password):
+                try:
+                    engine = create_connection(user=data_user, password=data_password, database=DATABASE)
+                    with engine.connect() as conn:
+                        conn.execute(text("SELECT 1"))
+                    print("   ✅ Conectado com sucesso!")
+                except Exception as e2:
+                    print(f"   ❌ Erro ao conectar: {str(e2)}")
+                    sys.exit(1)
+            else:
+                print(f"   ❌ Erro ao conectar: {error_message}")
+                sys.exit(1)
+        else:
+            print(f"   ❌ Erro ao conectar: {error_message}")
+            sys.exit(1)
     
     # Procurar por CSVs
     csv_files = list(DATA_DIR.glob("*.csv"))

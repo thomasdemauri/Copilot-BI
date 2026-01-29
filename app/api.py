@@ -33,6 +33,7 @@ app.add_middleware(
 
 API_KEY = os.getenv("API_KEY")
 MYSQL_USER = os.getenv("MYSQL_USER")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
 MYSQL_ROOT_PASSWORD = str(os.getenv("MYSQL_ROOT_PASSWORD"))
 HOST = str(os.getenv("HOST"))
 PORT = int(os.getenv("MYSQL_PORT", 3306))
@@ -53,7 +54,7 @@ def setup_database_permissions():
         try:
             engine = create_mysql_engine(
                 user=MYSQL_USER,
-                password=MYSQL_ROOT_PASSWORD,
+                password=MYSQL_PASSWORD or MYSQL_ROOT_PASSWORD,
                 host=HOST,
                 port=PORT,
                 database=DATABASE
@@ -88,7 +89,7 @@ def setup_database_permissions():
             # Verificar se funcionou
             engine = create_mysql_engine(
                 user=MYSQL_USER,
-                password=MYSQL_ROOT_PASSWORD,
+                password=MYSQL_PASSWORD or MYSQL_ROOT_PASSWORD,
                 host=HOST,
                 port=PORT,
                 database=DATABASE
@@ -210,16 +211,38 @@ def needs_database_query(question: str) -> bool:
         "meu nome é", "me chamo", "sou o", "sou a",
         "quem é você", "o que você faz", "você pode", "consegue",
     ]
+
+    feedback_patterns = [
+        "ta moscando", "tá moscando", "nao é isso", "não é isso",
+        "isso nao", "isso não", "errado", "resposta errada",
+        "nada a ver", "não faz sentido", "nao faz sentido",
+        "recalcula", "recalcular", "refaça", "refazer",
+    ]
     
     # Se começar com essas palavras, não precisa de query
     if any(question_lower.startswith(pattern) for pattern in casual_patterns):
         return False
+
+    if any(pattern in question_lower for pattern in feedback_patterns):
+        return False
     
     # Se for muito curta (< 10 chars) e não tiver palavras-chave, provavelmente não precisa
-    if len(question_lower) < 10 and not any(word in question_lower for word in ["top", "categoria", "estado", "gmv", "vendas"]):
+    if len(question_lower) < 10 and not any(word in question_lower for word in ["top", "categoria", "estado", "gmv", "vendas", "atraso", "entrega", "frete"]):
         return False
     
     return True
+
+
+def is_english(question: str) -> bool:
+    """Heurística simples para detectar inglês vs português."""
+    q = question.lower()
+    pt_markers = ["não", "nao", "que", "por que", "porque", "como", "qual", "quem", "onde", "quando", "entrega", "pedido"]
+    en_markers = ["what", "who", "where", "when", "why", "how", "delivery", "order", "sales", "reviews", "category"]
+
+    pt_hits = sum(1 for w in pt_markers if w in q)
+    en_hits = sum(1 for w in en_markers if w in q)
+
+    return en_hits > pt_hits
 
 @app.post("/api/ask", response_model=QueryResponse)
 async def ask_database(request: QueryRequest):
@@ -236,6 +259,11 @@ async def ask_database(request: QueryRequest):
                 "olá": "Olá! Sou seu assistente de análise de dados Olist. Como posso ajudar você hoje? Posso responder perguntas sobre categorias, vendas, GMV, estados, pagamentos e muito mais!",
                 "oi": "Oi! 👋 Estou aqui para ajudar com análises do dataset Olist. Pergunte-me sobre vendas, categorias, estados ou qualquer métrica!",
                 "meu nome": f"Prazer em conhecê-lo! Como posso ajudá-lo a analisar os dados do Olist hoje?",
+                "ta moscando": "Entendi. Quer que eu recalcule usando **apenas pedidos atrasados** (entregues após a data estimada)?",
+                "tá moscando": "Entendi. Quer que eu recalcule usando **apenas pedidos atrasados** (entregues após a data estimada)?",
+                "não é isso": "Ok. Você quer que eu refaça a análise? Posso calcular atraso por **estado (UF)** ou por **região macro**.",
+                "nao é isso": "Ok. Você quer que eu refaça a análise? Posso calcular atraso por **estado (UF)** ou por **região macro**.",
+                "nada a ver": "Desculpe pela resposta anterior. Você pode reformular a pergunta ou indicar o recorte desejado (estado, região macro, período)?",
             }
             
             # Encontrar resposta casual
@@ -270,7 +298,7 @@ async def ask_database(request: QueryRequest):
         try:
             engine = create_mysql_engine(
                 user=MYSQL_USER,
-                password=MYSQL_ROOT_PASSWORD,
+                password=MYSQL_PASSWORD or MYSQL_ROOT_PASSWORD,
                 host=HOST,
                 port=PORT,
                 database=DATABASE
@@ -326,6 +354,12 @@ async def ask_database(request: QueryRequest):
             print(f"Content: {last_msg.content}")
         
         final_content = result["messages"][-1].content if result.get("messages") else ""
+
+        # Se a pergunta for em inglês e a resposta for a negativa em PT-BR, corrigir idioma
+        pt_scope_message = "Desculpe, só tenho informações sobre os dados do Olist."
+        en_scope_message = "Sorry, I only have information about Olist data. I can assist with questions about Olist orders, deliveries, products, categories, reviews, and sales."
+        if is_english(request.question) and pt_scope_message in final_content:
+            final_content = en_scope_message
 
         # Salvar no histórico
         timestamp = datetime.now().isoformat()

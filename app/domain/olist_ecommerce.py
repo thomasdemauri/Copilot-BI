@@ -169,6 +169,11 @@ OLIST_ANALYTICAL_PATTERNS = """
    
    Analyze impact on review scores
 
+   IMPORTANT for "atraso" questions:
+   - Consider **only late deliveries** (delivered > estimated)
+   - Use positive delay days: DATEDIFF(delivered, estimated) > 0
+   - If no late deliveries in a segment, report as "sem atraso" instead of negative values
+
 3. CATEGORY PERFORMANCE
    For each product_category_name_english:
    - Revenue contribution
@@ -247,6 +252,38 @@ FROM olist_orders_dataset o
 LEFT JOIN olist_order_reviews_dataset r ON o.order_id = r.order_id
 WHERE o.order_status = 'delivered'
 GROUP BY delivery_status;
+
+State with Highest Average Delay (late deliveries only):
+SELECT
+      c.customer_state,
+      COUNT(DISTINCT o.order_id) AS late_orders,
+      AVG(DATEDIFF(o.order_delivered_customer_date, o.order_estimated_delivery_date)) AS avg_days_late
+FROM olist_orders_dataset o
+JOIN olist_customers_dataset c ON o.customer_id = c.customer_id
+WHERE o.order_status = 'delivered'
+   AND o.order_delivered_customer_date > o.order_estimated_delivery_date
+GROUP BY c.customer_state
+ORDER BY avg_days_late DESC
+LIMIT 10;
+
+Review Comments by Category (Sample):
+SELECT 
+    r.review_id,
+    r.review_score,
+    r.review_comment_title,
+    r.review_comment_message,
+    c.customer_state
+FROM olist_order_reviews_dataset r
+JOIN olist_orders_dataset o ON r.order_id = o.order_id
+JOIN olist_order_items_dataset oi ON o.order_id = oi.order_id
+JOIN olist_products_dataset p ON oi.product_id = p.product_id
+JOIN product_category_name_translation t ON p.product_category_name = t.product_category_name
+JOIN olist_customers_dataset c ON o.customer_id = c.customer_id
+WHERE t.product_category_name_english = 'health_beauty'
+  AND r.review_comment_message IS NOT NULL 
+  AND r.review_comment_message <> ''
+ORDER BY r.review_score DESC, r.review_creation_date DESC
+LIMIT 15;
 
 Top States by GMV:
 SELECT 
