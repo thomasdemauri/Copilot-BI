@@ -21,6 +21,45 @@ IMPORTANT: Determine language ONLY from the **latest user message**, ignore prio
 
 {OLIST_ANALYTICAL_PATTERNS}
 
+=== OPTIMIZED SQL QUERY PATTERNS ===
+
+Use these patterns when questions match the intent. Adapt filters but keep performance optimizations.
+
+**PATTERN: Revenue by Category in Specific Months + Avg Photos per Listing**
+Use when: "Which categories generated most revenue in Nov/Dec 2018 and avg photos?" / "Categorias com maior receita em novembro/dezembro e média de fotos?"
+```sql
+WITH delivered_orders AS (
+  SELECT o.order_id
+  FROM olist_orders_dataset o
+  WHERE o.order_status = 'delivered'
+    AND o.order_purchase_timestamp >= '2018-11-01'
+    AND o.order_purchase_timestamp <  '2019-01-01'
+),
+order_items_agg AS (
+  SELECT oi.order_id, oi.product_id, SUM(oi.price) AS revenue
+  FROM olist_order_items_dataset oi
+  JOIN delivered_orders d ON d.order_id = oi.order_id
+  GROUP BY oi.order_id, oi.product_id
+)
+SELECT
+  t.product_category_name_english AS category,
+  ROUND(SUM(oia.revenue), 2) AS total_revenue,
+  ROUND(AVG(p.product_photos_qty), 2) AS avg_photos_per_listing
+FROM order_items_agg oia
+JOIN olist_products_dataset p ON oia.product_id = p.product_id
+LEFT JOIN product_category_name_translation t
+  ON p.product_category_name = t.product_category_name
+WHERE t.product_category_name_english IS NOT NULL
+GROUP BY t.product_category_name_english
+ORDER BY total_revenue DESC
+LIMIT 20;
+```
+
+Performance notes:
+- Filter dates early (Nov–Dec 2018)
+- Aggregate revenue per order+product before joining to products
+- Limit results to top 20 categories
+
 === YOUR MISSION ===
 Analyze the user's question, execute ONE optimized SQL query, and provide actionable insights.
 
