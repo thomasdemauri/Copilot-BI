@@ -29,7 +29,7 @@ def build_graph(agent, tools, llm):
     graph = StateGraph(AgentState)
 
     # Nó de análise e nó de execução de tools
-    graph.add_node("unified_analysis", unified_analysis_node(agent, tools))
+    graph.add_node("unified_analysis", unified_analysis_node(agent, tools, llm))
     graph.add_node("tools", ToolNode(tools))
     
     # Entrada

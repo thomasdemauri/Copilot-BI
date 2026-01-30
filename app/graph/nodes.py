@@ -1,9 +1,9 @@
 from graph.state import AgentState
 from langchain.messages import HumanMessage, SystemMessage
-from langchain.agents import create_agent
+from langchain_core.messages import ToolMessage
 from domain.olist_ecommerce import OLIST_SCHEMA, OLIST_METRICS, OLIST_ANALYTICAL_PATTERNS
 
-def unified_analysis_node(agent, tools):
+def unified_analysis_node(agent, tools, llm):
     """Nó unificado que executa SQL e gera insights em uma única passagem."""
     def _node(state: AgentState):
         prompt = f"""
@@ -60,17 +60,57 @@ Performance notes:
 - Aggregate revenue per order+product before joining to products
 - Limit results to top 20 categories
 
+**PATTERN: Avg customer spending by state (any time window)**
+Use when: "average customer spending by state" / "gasto médio por cliente por estado" with any period.
+```sql
+WITH filtered_orders AS (
+  SELECT o.order_id, o.customer_id
+  FROM olist_orders_dataset o
+  WHERE o.order_status = 'delivered'
+    AND o.order_purchase_timestamp >= :start_date
+    AND o.order_purchase_timestamp <  :end_date
+),
+order_gmv AS (
+  SELECT fo.customer_id, SUM(oi.price + oi.freight_value) AS gmv
+  FROM filtered_orders fo
+  JOIN olist_order_items_dataset oi ON fo.order_id = oi.order_id
+  GROUP BY fo.customer_id
+),
+customer_gmv AS (
+  SELECT c.customer_unique_id, c.customer_state, SUM(og.gmv) AS customer_gmv
+  FROM order_gmv og
+  JOIN olist_customers_dataset c ON og.customer_id = c.customer_id
+  GROUP BY c.customer_unique_id, c.customer_state
+)
+SELECT
+  customer_state,
+  ROUND(AVG(customer_gmv), 2) AS avg_spend_per_customer,
+  COUNT(DISTINCT customer_unique_id) AS customers
+FROM customer_gmv
+GROUP BY customer_state
+ORDER BY avg_spend_per_customer DESC
+LIMIT 15;
+```
+Replace `:start_date` and `:end_date` with the period requested by the user.
+If the user specifies months/years, use explicit dates.
+If the user asks for a relative window (e.g., last 3 months), follow the TIME PERIOD RULE.
+If the query returns no rows, explain the dataset has no orders in that window and use the nearest available period instead.
+
 === YOUR MISSION ===
 Analyze the user's question, execute ONE optimized SQL query, and provide actionable insights.
 
 CRITICAL: If the question is about data/metrics, you MUST call the SQL tool exactly ONCE and base the answer strictly on its output.
 CRITICAL: After executing the SQL tool ONCE, provide your final analysis. DO NOT call the SQL tool multiple times.
+IMPORTANT: When calling the SQL tool, pass a complete SQL query (not natural language).
 
 === SCOPE RULE (IMPORTANT) ===
 If the question is **outside the Olist dataset scope**, respond politely that you only have information about Olist data and cannot answer.
 Always respond in the SAME LANGUAGE as the user's question.
 Do NOT answer general knowledge, history, news, science, or personal questions.
 When in doubt, ask the user to rephrase in terms of Olist data.
+
+Questions about orders, payments, customers, products, reviews, deliveries, prices, freight, states, and dates are ALWAYS in scope.
+If the requested time window has no data, do NOT respond out-of-scope; explain the data coverage and provide the nearest available period.
 
 Examples of OUT-OF-SCOPE:
 - "Quem descobriu o Brasil?"
@@ -276,7 +316,8 @@ Remember:
         """
         
         messages_with_prompt = list(state["messages"]) + [SystemMessage(content=prompt)]
-        response = agent.invoke(messages_with_prompt)
+        has_tool_message = any(isinstance(msg, ToolMessage) for msg in state["messages"])
+        response = llm.invoke(messages_with_prompt) if has_tool_message else agent.invoke(messages_with_prompt)
         return {"messages": [response]}
     
     return _node
