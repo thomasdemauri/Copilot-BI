@@ -11,7 +11,7 @@ Does any state have a slower delivery time pattern?
 Is there a difference in average ticket size by payment type?
 
 ### Question 5
-Are there many canceled orders in December 2018?
+Are there many canceled orders in 2018?
 
 ### Question 5
 What is the average customer spending by state in the last three months of 2018?
